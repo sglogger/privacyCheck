@@ -1040,7 +1040,13 @@ async function fetchPublicIp() {
       const r = await fetch(url, { signal: AbortSignal.timeout(4000), cache: "no-store" });
       if (!r.ok) continue;
       const j = await r.json();
-      if (j && j.ip) { node.textContent = j.ip; return; }
+      if (j && j.ip) {
+        node.textContent = j.ip;
+        // Report it back so the public IP shows up in the server access log too
+        // (the server can't see it when we reach it via NAT/an internal hop).
+        fetch(`/api/clientmeta?pubip=${encodeURIComponent(j.ip)}`, { cache: "no-store" }).catch(() => {});
+        return;
+      }
     } catch {}
   }
   // Leave the server-provided baseline; only mark blocked if nothing filled it.

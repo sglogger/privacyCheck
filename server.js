@@ -699,6 +699,22 @@ app.get("/api/dns", async (req, res) => {
   res.json({ available: true, host, records });
 });
 
+// The browser's own public IP (from its external echo lookup). When the client
+// sits behind NAT/VPN and reaches us via an internal hop, the server can't see
+// this IP itself — so the page reports it here purely so it lands in the log,
+// next to the forwarded client IP and the direct (Traefik) peer.
+app.get("/api/clientmeta", (req, res) => {
+  const pub = normalizeIp(String(req.query.pubip || ""));
+  const ok = isValidIp(pub);
+  if (LOG_REQUESTS) {
+    const ua = req.headers["user-agent"] || "-";
+    console.log(
+      `${clientIpOf(req)} - - [${apacheDate(new Date())}] CLIENT pubip=${ok ? pub : "-"} via=${directIpOf(req)} "${ua}"`
+    );
+  }
+  res.status(204).end();
+});
+
 app.get("/api/healthz", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
