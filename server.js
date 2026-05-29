@@ -56,6 +56,45 @@ function isPrivateOrLocal(ip) {
   );
 }
 
+// --- IPv4 CIDR matching, used to mask configured "boring" leading hops ---
+function ipv4ToInt(ip) {
+  const parts = normalizeIp(ip || "").split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const o of parts) {
+    const v = Number(o);
+    if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+    n = n * 256 + v;
+  }
+  return n >>> 0;
+}
+function ipInCidr(ip, cidr) {
+  const [range, bitsStr] = String(cidr).split("/");
+  const bits = Number(bitsStr);
+  const ipN = ipv4ToInt(ip);
+  const rN = ipv4ToInt(range);
+  if (ipN == null || rN == null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  if (bits === 0) return true;
+  const mask = (~((1 << (32 - bits)) - 1)) >>> 0;
+  return (ipN & mask) === (rN & mask);
+}
+
+// Traceroute hop-masking config (env-overridable):
+//   TRACEROUTE_HIDE_PRIVATE  "false" to keep private/RFC1918 leading hops (default: hide)
+//   TRACEROUTE_HIDE_RANGES   comma-separated CIDRs to also hide (default: 193.239.20.0/22)
+const TR_HIDE_PRIVATE = process.env.TRACEROUTE_HIDE_PRIVATE !== "false";
+const TR_HIDE_RANGES = (process.env.TRACEROUTE_HIDE_RANGES ?? "193.239.20.0/22")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// A leading hop is masked if it's private (when enabled) or inside a hide-range.
+function hopShouldHide(ip) {
+  if (!ip) return false; // an unanswered (*) hop ends the trimming
+  if (TR_HIDE_PRIVATE && isPrivateOrLocal(ip)) return true;
+  return TR_HIDE_RANGES.some((c) => ipInCidr(ip, c));
+}
+
 // Parse the full X-Forwarded-For chain so we can show every hop.
 function forwardedChain(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -403,14 +442,29 @@ app.get("/api/traceroute", async (req, res) => {
       })
       .filter(Boolean);
 
-    // Reverse-resolve each responding hop so the path shows hostnames too.
+    // Mask the boring leading hops (own gateway / ISP edge): trim from the front
+    // while each hop is private/RFC1918 or inside a configured hide-range.
+    let hiddenLeadingHops = 0;
+    while (hops.length && hopShouldHide(hops[0].ip)) {
+      hops.shift();
+      hiddenLeadingHops++;
+    }
+
+    // Reverse-resolve each *remaining* responding hop so the path shows hostnames.
     await Promise.all(
       hops.map(async (h) => {
         if (h.ip) h.host = await reverseDns(h.ip);
       })
     );
 
-    res.json({ available: true, target: tgt.ip, note: tgt.note, hops });
+    res.json({
+      available: true,
+      target: tgt.ip,
+      note: tgt.note,
+      hiddenLeadingHops,
+      hideConfig: { private: TR_HIDE_PRIVATE, ranges: TR_HIDE_RANGES },
+      hops,
+    });
   } catch (err) {
     res.json({
       available: false,

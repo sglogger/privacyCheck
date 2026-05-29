@@ -385,8 +385,12 @@ async function loadServerInfo() {
         try {
           const r = await (await fetch("/api/traceroute")).json();
           if (r.available && r.hops.length) {
+            const hideMsg = r.hiddenLeadingHops
+              ? `${r.hiddenLeadingHops} leading hop${r.hiddenLeadingHops > 1 ? "s" : ""} hidden (private${r.hideConfig && r.hideConfig.ranges.length ? " / " + r.hideConfig.ranges.join(", ") : ""}).`
+              : null;
             out.replaceChildren(
               r.note ? el("p", { class: "note warn" }, r.note) : document.createTextNode(""),
+              hideMsg ? el("p", { class: "note" }, hideMsg) : document.createTextNode(""),
               el("p", { class: "note" }, `Path from the server to ${r.target}:`),
               el("pre", { class: "block" }, r.hops.map((h) => `${String(h.hop).padStart(2)}  ${(h.ip || "*").padEnd(16)}  ${h.rttMs != null ? (h.rttMs + " ms").padEnd(10) : "".padEnd(10)}${h.host && h.host.length ? h.host[0] : ""}`).join("\n"))
             );
@@ -816,14 +820,24 @@ function loadClientInfo() {
     const btn = el("button", { class: "btn ghost", onclick: () => {
       out.replaceChildren(el("p", { class: "note" }, el("span", { class: "spinner" }), " requesting precise location…"));
       navigator.geolocation.getCurrentPosition(
-        (pos) => out.replaceChildren(
-          row("Latitude", pos.coords.latitude.toFixed(6)),
-          row("Longitude", pos.coords.longitude.toFixed(6)),
-          row("Accuracy", Math.round(pos.coords.accuracy) + " m"),
-          row("Altitude", pos.coords.altitude != null ? Math.round(pos.coords.altitude) + " m" : "—"),
-          row("Heading", pos.coords.heading != null ? pos.coords.heading + "°" : "—"),
-          row("Speed", pos.coords.speed != null ? pos.coords.speed + " m/s" : "—")
-        ),
+        (pos) => {
+          const { latitude: lat, longitude: lon, accuracy } = pos.coords;
+          // Map window sized to the reported accuracy (clamped to a sane range).
+          const d = Math.min(0.05, Math.max(0.002, (accuracy || 100) / 111000));
+          const bbox = `${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}`;
+          const src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lon}`;
+          out.replaceChildren(
+            row("Latitude", lat.toFixed(6)),
+            row("Longitude", lon.toFixed(6)),
+            row("Accuracy", Math.round(accuracy) + " m"),
+            row("Altitude", pos.coords.altitude != null ? Math.round(pos.coords.altitude) + " m" : "—"),
+            row("Heading", pos.coords.heading != null ? pos.coords.heading + "°" : "—"),
+            row("Speed", pos.coords.speed != null ? pos.coords.speed + " m/s" : "—"),
+            el("div", { class: "map-wrap" }, el("iframe", { src, loading: "lazy", title: "your precise location" })),
+            el("p", { class: "note" },
+              el("a", { href: `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=17/${lat}/${lon}`, target: "_blank", rel: "noopener" }, "Open full map →"))
+          );
+        },
         (err) => out.replaceChildren(el("p", { class: "note bad" }, "denied / failed: " + err.message)),
         { enableHighAccuracy: true, timeout: 10000 }
       );
