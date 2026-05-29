@@ -1,0 +1,16 @@
+services:
+  hidden-homepage:
+    build: .
+    image: hidden-homepage
+    container_name: hidden-homepage
+    restart: unless-stopped
+    ports:
+      - "3010:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+    # traceroute / nmap -O need raw sockets. Grant the capability to enable the
+    # active probes; remove this block if you only want passive analysis.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN

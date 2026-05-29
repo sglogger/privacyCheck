@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="unsafe-url" />
+    <title>What the Internet Knows About You</title>
+    <meta
+      name="description"
+      content="A live look at everything your browser and connection reveal about you."
+    />
+    <link rel="preconnect" href="http://ip-api.com" />
+    <link rel="stylesheet" href="style.css" />
+    <!-- Adblock bait: filter lists hide elements with these class/id names. -->
+    <div class="ad-banner ads adsbox doubleclick ad-placement carbon-ads" id="ad-bait" aria-hidden="true" style="height:1px;width:1px;position:absolute;left:-9999px;">&nbsp;</div>
+  </head>
+  <body>
+    <div class="scanlines" aria-hidden="true"></div>
+
+    <header class="hero">
+      <div class="hero-inner">
+        <p class="kicker">// passive reconnaissance · live</p>
+        <h1>What the Internet Knows<br /><span class="accent">About You</span></h1>
+        <p class="lede">
+          You opened a page. That single request — plus a few lines of JavaScript —
+          already leaks this much. Nothing here is stored; reload and it's gone.
+        </p>
+        <div class="hero-ips" id="hero-ips">
+          <div class="hero-ip">
+            <span class="hero-ip-label">Your IP</span>
+            <span class="hero-ip-value" id="hero-ip">…</span>
+          </div>
+          <div class="hero-ip">
+            <span class="hero-ip-label">Your Public IP</span>
+            <span class="hero-ip-value" id="hero-pubip">…</span>
+          </div>
+          <div class="hero-ip">
+            <span class="hero-ip-label">Location</span>
+            <span class="hero-ip-value" id="hero-loc">…</span>
+          </div>
+          <div class="hero-ip">
+            <span class="hero-ip-label">Network</span>
+            <span class="hero-ip-value" id="hero-asn">…</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="grid" class="grid">
+      <!-- Cards are injected by app.js -->
+    </main>
+
+    <footer class="footer">
+      <p>
+        Built as a privacy-awareness demo. All analysis happens live in your
+        session and on the server handling your request — no database, no
+        tracking, no persistence. Geo/ASN data via
+        <a href="https://ip-api.com" rel="noopener" target="_blank">ip-api.com</a>.
+      </p>
+      <p>
+        Interested in the source code?
+        <a href="https://github.com/sglogger/privacyCheck" rel="noopener" target="_blank">github.com/sglogger/privacyCheck</a>
+      </p>
+      <p class="footer-meta" id="footer-meta"></p>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
