@@ -442,18 +442,22 @@ app.get("/api/traceroute", async (req, res) => {
       })
       .filter(Boolean);
 
-    // Mask the boring leading hops (own gateway / ISP edge): trim from the front
-    // while each hop is private/RFC1918 or inside a configured hide-range.
-    let hiddenLeadingHops = 0;
-    while (hops.length && hopShouldHide(hops[0].ip)) {
-      hops.shift();
-      hiddenLeadingHops++;
+    // Redact (don't drop) the masked hops: keep their position/RTT but strip the
+    // address. Hops that are private/RFC1918 or inside a hide-range are blanked.
+    let redactedCount = 0;
+    for (const h of hops) {
+      if (hopShouldHide(h.ip)) {
+        h.redacted = true;
+        h.ip = null;
+        delete h.raw; // raw line still contains the address — don't leak it
+        redactedCount++;
+      }
     }
 
-    // Reverse-resolve each *remaining* responding hop so the path shows hostnames.
+    // Reverse-resolve only the non-redacted responding hops.
     await Promise.all(
       hops.map(async (h) => {
-        if (h.ip) h.host = await reverseDns(h.ip);
+        if (h.ip && !h.redacted) h.host = await reverseDns(h.ip);
       })
     );
 
@@ -461,7 +465,7 @@ app.get("/api/traceroute", async (req, res) => {
       available: true,
       target: tgt.ip,
       note: tgt.note,
-      hiddenLeadingHops,
+      redactedCount,
       hideConfig: { private: TR_HIDE_PRIVATE, ranges: TR_HIDE_RANGES },
       hops,
     });
