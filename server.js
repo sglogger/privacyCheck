@@ -22,13 +22,14 @@ const LOG_REQUESTS = process.env.LOG_REQUESTS !== "false";
 if (LOG_REQUESTS) {
   app.use((req, res, next) => {
     res.on("finish", () => {
-      const ip = clientIpOf(req);
+      const ip = clientIpOf(req); // real client (forwarded) — shown as "Client IP" on the page
+      const direct = directIpOf(req); // the TCP peer we actually talk to (Traefik/proxy) — "Direct peer"
       const reqLine = `${req.method} ${req.originalUrl} HTTP/${req.httpVersion}`;
       const len = res.getHeader("content-length") || "-";
       const ref = req.headers["referer"] || "-";
       const ua = req.headers["user-agent"] || "-";
-      // %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"
-      console.log(`${ip} - - [${apacheDate(new Date())}] "${reqLine}" ${res.statusCode} ${len} "${ref}" "${ua}"`);
+      // %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" via=<direct peer>
+      console.log(`${ip} - - [${apacheDate(new Date())}] "${reqLine}" ${res.statusCode} ${len} "${ref}" "${ua}" via=${direct}`);
     });
     next();
   });
@@ -146,6 +147,11 @@ function clientIpOf(req) {
   );
 }
 
+// The direct TCP peer (e.g. Traefik/CDN) — not the real client when proxied.
+function directIpOf(req) {
+  return normalizeIp(req.socket.remoteAddress) || "-";
+}
+
 // The OS user the node process runs as (for the "who is executing" audit log).
 const RUN_USER = (() => {
   try {
@@ -160,7 +166,7 @@ const RUN_USER = (() => {
 function logExec(req, argv) {
   if (!LOG_REQUESTS) return;
   const cmd = Array.isArray(argv) ? argv.join(" ") : String(argv);
-  console.log(`${clientIpOf(req)} - - [${apacheDate(new Date())}] EXEC (as ${RUN_USER}) ${cmd}`);
+  console.log(`${clientIpOf(req)} - - [${apacheDate(new Date())}] EXEC (as ${RUN_USER}) ${cmd} via=${directIpOf(req)}`);
 }
 
 async function reverseDns(ip) {
