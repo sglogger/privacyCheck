@@ -385,14 +385,18 @@ async function loadServerInfo() {
         try {
           const r = await (await fetch("/api/traceroute")).json();
           if (r.available && r.hops.length) {
-            const hideMsg = r.hiddenLeadingHops
-              ? `${r.hiddenLeadingHops} leading hop${r.hiddenLeadingHops > 1 ? "s" : ""} hidden (private${r.hideConfig && r.hideConfig.ranges.length ? " / " + r.hideConfig.ranges.join(", ") : ""}).`
+            const redMsg = r.redactedCount
+              ? `${r.redactedCount} hop${r.redactedCount > 1 ? "s" : ""} redacted (private${r.hideConfig && r.hideConfig.ranges.length ? " / " + r.hideConfig.ranges.join(", ") : ""}).`
               : null;
             out.replaceChildren(
               r.note ? el("p", { class: "note warn" }, r.note) : document.createTextNode(""),
-              hideMsg ? el("p", { class: "note" }, hideMsg) : document.createTextNode(""),
+              redMsg ? el("p", { class: "note" }, redMsg) : document.createTextNode(""),
               el("p", { class: "note" }, `Path from the server to ${r.target}:`),
-              el("pre", { class: "block" }, r.hops.map((h) => `${String(h.hop).padStart(2)}  ${(h.ip || "*").padEnd(16)}  ${h.rttMs != null ? (h.rttMs + " ms").padEnd(10) : "".padEnd(10)}${h.host && h.host.length ? h.host[0] : ""}`).join("\n"))
+              el("pre", { class: "block" }, r.hops.map((h) => {
+                const addr = h.redacted ? "*redacted*" : (h.ip || "*");
+                const host = h.redacted ? "" : (h.host && h.host.length ? h.host[0] : "");
+                return `${String(h.hop).padStart(2)}  ${addr.padEnd(16)}  ${h.rttMs != null ? (h.rttMs + " ms").padEnd(10) : "".padEnd(10)}${host}`;
+              }).join("\n"))
             );
           } else {
             out.replaceChildren(el("p", { class: "note" }, r.reason || "unavailable"));
