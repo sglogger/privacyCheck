@@ -1,5 +1,6 @@
 import express from "express";
 import net from "node:net";
+import os from "node:os";
 import { promises as dns } from "node:dns";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -15,6 +16,24 @@ const PORT = process.env.PORT || 3000;
 
 // We sit behind whatever proxy/load balancer; trust the chain so req.ip is meaningful.
 app.set("trust proxy", true);
+
+// Apache "combined" access log to stdout (-> docker logs). Disable with LOG_REQUESTS=false.
+const LOG_REQUESTS = process.env.LOG_REQUESTS !== "false";
+if (LOG_REQUESTS) {
+  app.use((req, res, next) => {
+    res.on("finish", () => {
+      const ip = clientIpOf(req);
+      const reqLine = `${req.method} ${req.originalUrl} HTTP/${req.httpVersion}`;
+      const len = res.getHeader("content-length") || "-";
+      const ref = req.headers["referer"] || "-";
+      const ua = req.headers["user-agent"] || "-";
+      // %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"
+      console.log(`${ip} - - [${apacheDate(new Date())}] "${reqLine}" ${res.statusCode} ${len} "${ref}" "${ua}"`);
+    });
+    next();
+  });
+}
+
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ------------------------------------------------------------------ */
@@ -25,6 +44,17 @@ app.use(express.static(path.join(__dirname, "public")));
 function normalizeIp(ip) {
   if (!ip) return ip;
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+// Timestamp in Apache log format: [dd/Mon/yyyy:HH:mm:ss +ZZZZ]
+const APACHE_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function apacheDate(d) {
+  const p = (n, l = 2) => String(n).padStart(l, "0");
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const oh = p(Math.floor(Math.abs(off) / 60));
+  const om = p(Math.abs(off) % 60);
+  return `${p(d.getDate())}/${APACHE_MONTHS[d.getMonth()]}/${d.getFullYear()}:${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${sign}${oh}${om}`;
 }
 
 // Strict IPv4/IPv6 validation — anything passed to an external command must
@@ -103,6 +133,34 @@ function forwardedChain(req) {
     .split(",")
     .map((s) => normalizeIp(s.trim()))
     .filter(Boolean);
+}
+
+// Best guess at the requesting client's IP (used for both access + exec logs).
+function clientIpOf(req) {
+  const chain = forwardedChain(req);
+  return (
+    chain[0] ||
+    normalizeIp(req.headers["cf-connecting-ip"]) ||
+    normalizeIp(req.socket.remoteAddress) ||
+    "-"
+  );
+}
+
+// The OS user the node process runs as (for the "who is executing" audit log).
+const RUN_USER = (() => {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return typeof process.getuid === "function" ? `uid:${process.getuid()}` : "unknown";
+  }
+})();
+
+// Audit log for server-side command execution: which client triggered it, which
+// local user runs it, and the exact argv. Goes to stdout -> docker logs.
+function logExec(req, argv) {
+  if (!LOG_REQUESTS) return;
+  const cmd = Array.isArray(argv) ? argv.join(" ") : String(argv);
+  console.log(`${clientIpOf(req)} - - [${apacheDate(new Date())}] EXEC (as ${RUN_USER}) ${cmd}`);
 }
 
 async function reverseDns(ip) {
@@ -418,11 +476,9 @@ app.get("/api/traceroute", async (req, res) => {
   try {
     // -m 20 max hops, -w 2 wait 2s, -q 1 one probe per hop -> keep it snappy.
     // execFile + arg array: the target is a single argv entry, never shell-parsed.
-    const { stdout } = await execFileAsync(
-      "traceroute",
-      ["-m", "20", "-w", "2", "-q", "1", "-n", tgt.ip],
-      { timeout: 45000 }
-    );
+    const trArgs = ["traceroute", "-m", "20", "-w", "2", "-q", "1", "-n", tgt.ip];
+    logExec(req, trArgs);
+    const { stdout } = await execFileAsync(trArgs[0], trArgs.slice(1), { timeout: 45000 });
     const hops = stdout
       .split("\n")
       .slice(1)
@@ -562,6 +618,7 @@ app.get("/api/portscan", async (req, res) => {
     return res.json({ available: false, target: ip, reason: tgt.error, ports: [] });
   }
 
+  logExec(req, ["tcp-connect-portscan", `${SCAN_PORTS.length}ports`, tgt.ip]);
   // limited concurrency to stay polite while keeping the larger list snappy
   const results = [];
   const queue = [...SCAN_PORTS];
@@ -596,11 +653,9 @@ app.get("/api/osdetect", async (req, res) => {
   }
   try {
     // execFile + arg array: no shell, so the IP can't break out into a command.
-    const { stdout } = await execFileAsync(
-      "sudo",
-      ["-n", "nmap", "-O", "-Pn", "--osscan-guess", "--max-retries", "1", "--host-timeout", "30s", tgt.ip],
-      { timeout: 40000 }
-    );
+    const nmapArgs = ["sudo", "-n", "nmap", "-O", "-Pn", "--osscan-guess", "--max-retries", "1", "--host-timeout", "30s", tgt.ip];
+    logExec(req, nmapArgs); // note: sudo elevates nmap to root (see Dockerfile sudoers rule)
+    const { stdout } = await execFileAsync(nmapArgs[0], nmapArgs.slice(1), { timeout: 40000 });
     res.json({ available: true, target: tgt.ip, note: tgt.note, passive: osGuess(req), nmap: stdout });
   } catch (err) {
     res.json({

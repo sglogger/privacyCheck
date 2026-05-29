@@ -89,7 +89,10 @@ nginx / Caddy / Cloudflare to see real client IPs and the full proxy chain. On
   injection is not possible.
 - Adblock / localhost detection are **heuristics** — timing- and bait-based, so
   occasional false positives/negatives are expected.
-- Everything is ephemeral: no database, no logging of visitors, no analytics.
+- No database and no analytics. Requests are written to the container's stdout
+  in Apache **combined log format** (visible via `docker logs`); disable with
+  `LOG_REQUESTS=false`. These logs are ephemeral container output, not persisted
+  by the app itself.
 
 ## Layout
 ```
