@@ -23,6 +23,8 @@ if (LOG_REQUESTS) {
   app.use((req, res, next) => {
     res.on("finish", () => {
       const ip = clientIpOf(req); // real client (forwarded) — shown as "Client IP" on the page
+      // Skip the container's own health-check noise (local probe of /api/healthz).
+      if (req.path === "/api/healthz" && isPrivateOrLocal(ip)) return;
       const direct = directIpOf(req); // the TCP peer we actually talk to (Traefik/proxy) — "Direct peer"
       const reqLine = `${req.method} ${req.originalUrl} HTTP/${req.httpVersion}`;
       const len = res.getHeader("content-length") || "-";
