@@ -3,3 +3,4 @@ npm-debug.log*
 .DS_Store
 .env
 tools/__pycache__
+docker-compose.yml

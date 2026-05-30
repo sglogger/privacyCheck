@@ -23,7 +23,7 @@ import re
 import sys
 import subprocess
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -51,9 +51,25 @@ def clean(line):
     return line
 
 
+# Locale-independent date parsing: the server always emits English Apache month
+# names, but strptime("%b") would expect the *runtime* locale's names (e.g. "Mai"
+# on a German host), silently breaking the timeline. So parse the months ourselves.
+_MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+_DATE_RE = re.compile(
+    r"(\d{1,2})/([A-Za-z]{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2})\s+([+-]\d{4})")
+
+
 def parse_date(s):
+    m = _DATE_RE.match(s)
+    if not m:
+        return None
+    day, mon, year, hh, mm, ss, tz = m.groups()
+    if mon not in _MONTHS:
+        return None
+    off = timezone((1 if tz[0] == "+" else -1) * timedelta(hours=int(tz[1:3]), minutes=int(tz[3:5])))
     try:
-        return datetime.strptime(s, "%d/%b/%Y:%H:%M:%S %z")
+        return datetime(int(year), _MONTHS[mon], int(day), int(hh), int(mm), int(ss), tzinfo=off)
     except ValueError:
         return None
 
@@ -407,7 +423,8 @@ def main():
         print(c.dim("   nothing stands out"))
     else:
         for ip, reqs, reasons in flagged[: args.top]:
-            print(f"   {c.red(ip):<24} " + c.dim("· ".join(reasons)))
+            # pad the plain IP first, THEN colorize, so ANSI codes don't skew width
+            print("   " + c.red(f"{ip:<22}") + "  " + c.dim(" · ".join(reasons)))
     print()
 
 

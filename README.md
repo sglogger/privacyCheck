@@ -95,6 +95,8 @@ npm start   # http://localhost:3000  (traceroute/nmap need a Linux host with the
 | `LOG_REQUESTS` | `true` | Apache-format access + exec audit logging to stdout; `false` to disable |
 | `TRACEROUTE_HIDE_PRIVATE` | `true` | Mask private/RFC1918 hops in traceroute output |
 | `TRACEROUTE_HIDE_RANGES` | `193.239.20.0/22` | Comma-separated CIDRs to also mask (e.g. your ISP edge) |
+| `PROBE_RATE_MAX` | `10` | Max active probes (traceroute/nmap/portscan) per IP per window |
+| `PROBE_RATE_WINDOW_MS` | `60000` | Rate-limit window in ms for the active probes |
 
 ## Deploying behind a proxy
 
@@ -142,10 +144,17 @@ isn't exposed. Public hops beyond that are shown normally with hostnames.
 
 - All client-supplied input is treated as untrusted. The client IP fed to
   `traceroute` / `nmap` / the port scan / geo lookups can come from a spoofable
-  `X-Forwarded-For` header, so it is **strictly validated** as a real IPv4/IPv6
-  address; hostnames for DNS lookups pass a hostname validator. External commands
-  run via `execFile` (no shell) — command injection is not possible. The DOM is
-  built without any `innerHTML` sink, so server strings can't inject markup.
+  `X-Forwarded-For` header, so it is validated with **`net.isIP()`** (the kernel
+  parser — not a hand-rolled regex that would accept merely address-shaped junk),
+  and any value starting with `-` is rejected so a token can never be read as an
+  nmap/traceroute flag (argument injection). Hostnames for DNS lookups pass a
+  hostname validator. External commands run via `execFile` (no shell) — command
+  injection is not possible. The DOM is built without any `innerHTML` sink, so
+  server strings can't inject markup. Thanks to @antoinet for pointing me to this :)
+- The active probes are **rate-limited per IP** (`PROBE_RATE_MAX` per
+  `PROBE_RATE_WINDOW_MS`, default 10/60s) so the server can't be abused as a
+  root-privileged scan reflector. Private/internal targets aren't probed — they
+  fall back to the server's own public IP.
 - Runs as the **non-root** `node` user. `traceroute` works via a file capability
   (`setcap cap_net_raw`); `nmap` (which ignores file caps and demands `euid==0`)
   is allowed via a narrow passwordless `sudo` rule that lets `node` run **only**

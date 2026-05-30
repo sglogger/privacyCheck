@@ -60,16 +60,14 @@ function apacheDate(d) {
   return `${p(d.getDate())}/${APACHE_MONTHS[d.getMonth()]}/${d.getFullYear()}:${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${sign}${oh}${om}`;
 }
 
-// Strict IPv4/IPv6 validation — anything passed to an external command must
-// pass this, so header-spoofed garbage never reaches a child process.
+// Strict IPv4/IPv6 validation via the kernel-grade parser (net.isIP), NOT a
+// regex. A homegrown "hex + colons" regex accepts strings that merely *look*
+// like an address (e.g. "a:b") — and since anything passing this gate is handed
+// to a root `sudo nmap` / traceroute as an argv token, validation and the sink
+// MUST agree that the value is a real address. net.isIP returns 4, 6, or 0.
 function isValidIp(ip) {
   if (!ip) return false;
-  const v = normalizeIp(ip);
-  if (/^(\d{1,3})(\.\d{1,3}){3}$/.test(v)) {
-    return v.split(".").every((o) => Number(o) >= 0 && Number(o) <= 255);
-  }
-  // Conservative IPv6: hex groups + colons only.
-  return v.includes(":") && /^[0-9a-fA-F:]+$/.test(v);
+  return net.isIP(normalizeIp(ip)) !== 0;
 }
 
 function isPrivateOrLocal(ip) {
@@ -310,7 +308,50 @@ async function resolveProbeTarget(rawIp) {
     return { error: "Client IP is private/local and the server's public IP couldn't be determined." };
   }
   if (!isValidIp(rawIp)) return { error: "Client IP is not a valid IP address." };
-  return { ip: normalizeIp(rawIp), note: null };
+  const ip = normalizeIp(rawIp);
+  // Defense in depth: a real IP can never start with "-", but guard anyway so a
+  // future loosening of validation can't let a token be read as an nmap/
+  // traceroute flag (argument injection into the root-privileged sink).
+  if (ip.startsWith("-")) return { error: "Refusing option-like probe target." };
+  return { ip, note: null };
+}
+
+// Per-IP rate limit for the expensive active probes (traceroute/nmap/portscan),
+// so the server can't be abused as a root-privileged scan reflector. In-memory
+// sliding window; tune via PROBE_RATE_MAX / PROBE_RATE_WINDOW_MS.
+const PROBE_MAX = Number(process.env.PROBE_RATE_MAX || 10);
+const PROBE_WINDOW_MS = Number(process.env.PROBE_RATE_WINDOW_MS || 60000);
+const probeHits = new Map(); // ip -> timestamps[]
+function probeRateLimit(req) {
+  const ip = clientIpOf(req);
+  const now = Date.now();
+  const hits = (probeHits.get(ip) || []).filter((t) => now - t < PROBE_WINDOW_MS);
+  if (hits.length >= PROBE_MAX) {
+    probeHits.set(ip, hits);
+    return { ok: false, retry: Math.ceil((PROBE_WINDOW_MS - (now - hits[0])) / 1000) };
+  }
+  hits.push(now);
+  probeHits.set(ip, hits);
+  if (probeHits.size > 5000) {
+    for (const [k, v] of probeHits) {
+      const keep = v.filter((t) => now - t < PROBE_WINDOW_MS);
+      if (keep.length) probeHits.set(k, keep);
+      else probeHits.delete(k);
+    }
+  }
+  return { ok: true };
+}
+
+function probeLimited(req, res, extra = {}) {
+  const rl = probeRateLimit(req);
+  if (rl.ok) return false;
+  res.set("Retry-After", String(rl.retry));
+  res.status(429).json({
+    available: false,
+    reason: `Rate limited — max ${PROBE_MAX} probes per ${PROBE_WINDOW_MS / 1000}s. Try again in ${rl.retry}s.`,
+    ...extra,
+  });
+  return true;
 }
 
 // Curated set of "what does the request leak" headers, kept in display order.
@@ -470,6 +511,7 @@ app.get("/api/info", async (req, res) => {
 // containers (needs raw sockets / CAP_NET_RAW) and on hosts that drop ICMP, so
 // it degrades gracefully and never throws.
 app.get("/api/traceroute", async (req, res) => {
+  if (probeLimited(req, res, { hops: [] })) return;
   const chain = forwardedChain(req);
   const clientIp =
     chain[0] ||
@@ -615,6 +657,7 @@ function probePort(ip, port, timeout = 1500) {
 
 // Reverse port scan of the visitor's own public IP (TCP connect, no nmap/root).
 app.get("/api/portscan", async (req, res) => {
+  if (probeLimited(req, res, { ports: [] })) return;
   const chain = forwardedChain(req);
   const ip =
     chain[0] ||
@@ -653,6 +696,7 @@ app.get("/api/portscan", async (req, res) => {
 // so we invoke it through sudo (a tight NOPASSWD rule limits node to nmap only).
 // Degrades to the passive UA guess if sudo/nmap/raw sockets aren't available.
 app.get("/api/osdetect", async (req, res) => {
+  if (probeLimited(req, res, { passive: osGuess(req) })) return;
   const chain = forwardedChain(req);
   const ip = chain[0] || normalizeIp(req.headers["cf-connecting-ip"]) || normalizeIp(req.socket.remoteAddress);
   const tgt = await resolveProbeTarget(ip);

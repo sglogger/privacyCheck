@@ -13,6 +13,9 @@ services:
       # Traceroute hop masking — hide the boring leading hops (own gateway / ISP edge):
       # - TRACEROUTE_HIDE_PRIVATE=false        # keep private/RFC1918 leading hops (default: hide)
       # - TRACEROUTE_HIDE_RANGES=193.239.20.0/22,100.64.0.0/10   # CIDRs to also hide (default: 193.239.20.0/22)
+      # Rate-limit the active probes (traceroute/nmap/portscan) per client IP:
+      # - PROBE_RATE_MAX=10            # max probes per window (default 10)
+      # - PROBE_RATE_WINDOW_MS=60000   # window in ms (default 60000)
     # traceroute / nmap -O need raw sockets. Grant the capability to enable the
     # active probes; remove this block if you only want passive analysis.
     cap_add:
