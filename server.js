@@ -1,6 +1,7 @@
 import express from "express";
 import net from "node:net";
 import os from "node:os";
+import fs from "node:fs";
 import { promises as dns } from "node:dns";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -19,6 +20,27 @@ app.set("trust proxy", true);
 
 // Apache "combined" access log to stdout (-> docker logs). Disable with LOG_REQUESTS=false.
 const LOG_REQUESTS = process.env.LOG_REQUESTS !== "false";
+
+// Optionally also append every log line to a file so it survives container
+// restarts (docker logs are ephemeral). Set LOG_FILE to a path; mount that path
+// as a volume to persist it on the host. Empty (default) = stdout only.
+const LOG_FILE = process.env.LOG_FILE || "";
+const logStream = LOG_FILE
+  ? fs.createWriteStream(LOG_FILE, { flags: "a" })
+  : null;
+if (logStream) {
+  logStream.on("error", (err) =>
+    console.error(`log file ${LOG_FILE} write error: ${err.message}`)
+  );
+}
+
+// Single sink for the access/exec/client audit lines: always stdout, plus the
+// log file when LOG_FILE is set.
+function logLine(line) {
+  console.log(line);
+  if (logStream) logStream.write(line + "\n");
+}
+
 if (LOG_REQUESTS) {
   app.use((req, res, next) => {
     res.on("finish", () => {
@@ -31,7 +53,7 @@ if (LOG_REQUESTS) {
       const ref = req.headers["referer"] || "-";
       const ua = req.headers["user-agent"] || "-";
       // %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" via=<direct peer>
-      console.log(`${ip} - - [${apacheDate(new Date())}] "${reqLine}" ${res.statusCode} ${len} "${ref}" "${ua}" via=${direct}`);
+      logLine(`${ip} - - [${apacheDate(new Date())}] "${reqLine}" ${res.statusCode} ${len} "${ref}" "${ua}" via=${direct}`);
     });
     next();
   });
@@ -166,7 +188,7 @@ const RUN_USER = (() => {
 function logExec(req, argv) {
   if (!LOG_REQUESTS) return;
   const cmd = Array.isArray(argv) ? argv.join(" ") : String(argv);
-  console.log(`${clientIpOf(req)} - - [${apacheDate(new Date())}] EXEC (as ${RUN_USER}) ${cmd} via=${directIpOf(req)}`);
+  logLine(`${clientIpOf(req)} - - [${apacheDate(new Date())}] EXEC (as ${RUN_USER}) ${cmd} via=${directIpOf(req)}`);
 }
 
 async function reverseDns(ip) {
@@ -754,7 +776,7 @@ app.get("/api/clientmeta", (req, res) => {
   const ok = isValidIp(pub);
   if (LOG_REQUESTS) {
     const ua = req.headers["user-agent"] || "-";
-    console.log(
+    logLine(
       `${clientIpOf(req)} - - [${apacheDate(new Date())}] CLIENT pubip=${ok ? pub : "-"} via=${directIpOf(req)} "${ua}"`
     );
   }
@@ -765,6 +787,7 @@ app.get("/api/healthz", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`hidden-homepage listening on http://0.0.0.0:${PORT}`);
+  if (logStream) console.log(`access/exec/client log also appended to ${LOG_FILE}`);
   // Warm the Tor exit-list cache so the first visitor doesn't pay the fetch.
   getTorExitSet().then((c) =>
     console.log(c.set ? `Tor exit list loaded: ${c.set.size} nodes` : `Tor exit list unavailable: ${c.error}`)

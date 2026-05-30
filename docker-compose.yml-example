@@ -10,6 +10,9 @@ services:
       - PORT=3000
       - NODE_ENV=production
       # - LOG_REQUESTS=false   # disable the Apache combined access log to stdout (default: on)
+      # Persist logs to a file (survives container restarts) in addition to stdout.
+      # Mount the directory below as a volume so it lands on the host.
+      # - LOG_FILE=/var/log/hidden-homepage/access.log
       # Traceroute hop masking — hide the boring leading hops (own gateway / ISP edge):
       # - TRACEROUTE_HIDE_PRIVATE=false        # keep private/RFC1918 leading hops (default: hide)
       # - TRACEROUTE_HIDE_RANGES=193.239.20.0/22,100.64.0.0/10   # CIDRs to also hide (default: 193.239.20.0/22)
@@ -21,3 +24,6 @@ services:
     cap_add:
       - NET_RAW
       - NET_ADMIN
+    # Persist the log file on the host (pair with LOG_FILE above).
+    # volumes:
+    #   - ./logs:/var/log/hidden-homepage

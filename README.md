@@ -93,6 +93,7 @@ npm start   # http://localhost:3000  (traceroute/nmap need a Linux host with the
 | --- | --- | --- |
 | `PORT` | `3000` | Port the server listens on |
 | `LOG_REQUESTS` | `true` | Apache-format access + exec audit logging to stdout; `false` to disable |
+| `LOG_FILE` | _(unset)_ | Also append every log line to this file (survives restarts); mount it as a volume to persist on the host. Stdout only when unset. |
 | `TRACEROUTE_HIDE_PRIVATE` | `true` | Mask private/RFC1918 hops in traceroute output |
 | `TRACEROUTE_HIDE_RANGES` | `193.239.20.0/22` | Comma-separated CIDRs to also mask (e.g. your ISP edge) |
 | `PROBE_RATE_MAX` | `10` | Max active probes (traceroute/nmap/portscan) per IP per window |
@@ -131,7 +132,16 @@ With `LOG_REQUESTS` on (default), the container writes to stdout (→ `docker lo
   10.10.10.172 - - [29/May/2026:20:38:40 +0000] CLIENT pubip=188.63.145.121 via=172.18.0.9 "Mozilla/5.0 …"
   ```
 
-These are ephemeral container logs; the app persists nothing itself.
+By default these are ephemeral container logs (lost on restart/recreate). Set
+`LOG_FILE` to also append the same lines to a file, and mount that path as a
+volume to keep them on the host:
+
+```yaml
+environment:
+  - LOG_FILE=/var/log/hidden-homepage/access.log
+volumes:
+  - ./logs:/var/log/hidden-homepage
+```
 
 ## Traceroute hop masking
 
