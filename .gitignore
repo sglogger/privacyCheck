@@ -4,3 +4,4 @@ npm-debug.log*
 .env
 tools/__pycache__
 docker-compose.yml
+logs

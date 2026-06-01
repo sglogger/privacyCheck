@@ -1028,6 +1028,27 @@ function webrtcIps() {
   });
 }
 
+// Stable per-browser visitor ID stored in localStorage (UUID v4). Used to
+// correlate repeat visits in the server-side per-visitor report files.
+function getVisitorId() {
+  const KEY = "hh_vid";
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  try {
+    let id = localStorage.getItem(KEY);
+    if (!id || !UUID_RE.test(id)) {
+      id = crypto.randomUUID
+        ? crypto.randomUUID()
+        : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+            (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
+          );
+      localStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
 // Independently determine the browser's public IP via an external echo service.
 // This is a cross-check against what our server sees (network.clientIp): if a
 // proxy/VPN sits in between, the two can differ. Falls back to the server value.
@@ -1054,8 +1075,273 @@ async function fetchPublicIp() {
 }
 
 /* =========================================================================
+ *  client report — fires silently on load, no user interaction
+ * ========================================================================= */
+async function sendClientReport() {
+  const n = navigator;
+  const report = { visitorId: getVisitorId() };
+
+  // ── Browser & device (sync) ───────────────────────────────────────────────
+  report.browser = {
+    userAgent: n.userAgent,
+    platform: n.platform,
+    vendor: n.vendor,
+    language: (n.languages || [n.language || ""]).join(","),
+    cpuCores: n.hardwareConcurrency,
+    deviceMemory: n.deviceMemory,
+    touchPoints: n.maxTouchPoints,
+    onLine: n.onLine,
+    pdfViewer: n.pdfViewerEnabled,
+  };
+
+  // ── Screen & display (sync) ───────────────────────────────────────────────
+  report.screen = {
+    w: screen.width, h: screen.height,
+    availW: screen.availWidth, availH: screen.availHeight,
+    windowW: innerWidth, windowH: innerHeight,
+    colorDepth: screen.colorDepth,
+    dpr: devicePixelRatio,
+    orientation: screen.orientation ? screen.orientation.type : null,
+    colorScheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    hdr: matchMedia("(dynamic-range: high)").matches,
+  };
+
+  // ── Locale & time (sync) ──────────────────────────────────────────────────
+  const dtf = Intl.DateTimeFormat().resolvedOptions();
+  const tzOff = -new Date().getTimezoneOffset() / 60;
+  report.locale = {
+    timezone: dtf.timeZone,
+    utcOffset: `${tzOff >= 0 ? "+" : ""}${tzOff}h`,
+    locale: dtf.locale,
+    calendar: dtf.calendar,
+    numberingSystem: Intl.NumberFormat().resolvedOptions().numberingSystem,
+  };
+
+  // ── Privacy & storage (sync) ──────────────────────────────────────────────
+  let lsOk = false, ssOk = false, idbOk = false;
+  try { localStorage.setItem("_t", "1"); localStorage.removeItem("_t"); lsOk = true; } catch {}
+  try { sessionStorage.setItem("_t", "1"); sessionStorage.removeItem("_t"); ssOk = true; } catch {}
+  try { idbOk = !!indexedDB; } catch {}
+  report.storage = {
+    cookies: n.cookieEnabled,
+    dnt: n.doNotTrack || null,
+    gpc: n.globalPrivacyControl ?? null,
+    localStorage: lsOk,
+    sessionStorage: ssOk,
+    indexedDB: idbOk,
+  };
+
+  // ── Network conditions (sync) ─────────────────────────────────────────────
+  const conn = n.connection || n.mozConnection || n.webkitConnection;
+  report.network = conn ? {
+    type: conn.effectiveType,
+    downlink: conn.downlink,
+    rtt: conn.rtt,
+    saveData: conn.saveData,
+  } : null;
+
+  // ── WebGL / GPU (sync) ────────────────────────────────────────────────────
+  report.webgl = null;
+  try {
+    const cv = document.createElement("canvas");
+    const gl = cv.getContext("webgl") || cv.getContext("experimental-webgl");
+    if (gl) {
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      report.webgl = {
+        vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+        renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+        glsl: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+        maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+      };
+    }
+  } catch {}
+
+  // ── Browser capabilities (sync) ───────────────────────────────────────────
+  report.capabilities = [
+    ["WebRTC", "RTCPeerConnection" in window],
+    ["WebGL2", "WebGL2RenderingContext" in window],
+    ["WebGPU", "gpu" in navigator],
+    ["WebAuthn", "credentials" in navigator && "PublicKeyCredential" in window],
+    ["WebBluetooth", "bluetooth" in navigator],
+    ["WebUSB", "usb" in navigator],
+    ["WebSerial", "serial" in navigator],
+    ["WebHID", "hid" in navigator],
+    ["WebNFC", "NDEFReader" in window],
+    ["Gamepad", "getGamepads" in navigator],
+    ["SpeechSynth", "speechSynthesis" in window],
+    ["ServiceWorker", "serviceWorker" in navigator],
+    ["PushAPI", "PushManager" in window],
+    ["Notifications", "Notification" in window],
+    ["PaymentRequest", "PaymentRequest" in window],
+    ["IdleDetection", "IdleDetector" in window],
+    ["WebTransport", "WebTransport" in window],
+    ["WebCodecs", "VideoEncoder" in window],
+    ["SharedArrayBuffer", "SharedArrayBuffer" in window],
+    ["WASM", "WebAssembly" in window],
+    ["BatteryAPI", "getBattery" in navigator],
+  ].filter(([, on]) => on).map(([name]) => name);
+
+  // ── Fonts (sync, ~50ms) ───────────────────────────────────────────────────
+  report.fonts = detectFonts();
+
+  // ── Plugins (sync) ────────────────────────────────────────────────────────
+  report.plugins = Array.from(n.plugins || []).map((p) => p.name).filter(Boolean);
+
+  // ── All async tasks fire concurrently ─────────────────────────────────────
+  const [
+    canvasRes, audioRes, uachRes, quotaRes,
+    adblockRes, permsRes, mediaRes, batteryRes,
+    webrtcRes, localhostRes,
+  ] = await Promise.allSettled([
+    // Canvas fingerprint
+    (async () => {
+      const cv = document.createElement("canvas");
+      cv.width = 240; cv.height = 60;
+      const ctx = cv.getContext("2d");
+      ctx.textBaseline = "top"; ctx.font = "16px 'Arial'";
+      ctx.fillStyle = "#f60"; ctx.fillRect(2, 2, 120, 28);
+      ctx.fillStyle = "#069"; ctx.fillText("hidden-homepage \u{1F575}\u{FE0F}", 4, 6);
+      ctx.fillStyle = "rgba(102,204,0,0.7)"; ctx.fillText("hidden-homepage \u{1F575}\u{FE0F}", 6, 20);
+      return hash(cv.toDataURL());
+    })(),
+    // Audio fingerprint
+    audioFingerprint(),
+    // UA Client Hints (Chromium)
+    n.userAgentData
+      ? n.userAgentData.getHighEntropyValues(["architecture", "bitness", "model", "platformVersion", "fullVersionList", "wow64"]).catch(() => null)
+      : Promise.resolve(null),
+    // Storage quota
+    navigator.storage ? navigator.storage.estimate().catch(() => null) : Promise.resolve(null),
+    // Ad/tracker blocker detection
+    detectAdblock(),
+    // Permission states (no prompt)
+    navigator.permissions
+      ? Promise.allSettled(
+          ["geolocation", "notifications", "camera", "microphone", "clipboard-read", "midi"].map(
+            (name) => navigator.permissions.query({ name }).then((r) => [name, r.state])
+          )
+        )
+      : Promise.resolve(null),
+    // Media device counts (no labels without grant)
+    navigator.mediaDevices ? navigator.mediaDevices.enumerateDevices().catch(() => null) : Promise.resolve(null),
+    // Battery
+    navigator.getBattery ? navigator.getBattery().catch(() => null) : Promise.resolve(null),
+    // WebRTC IP leak
+    webrtcIps(),
+    // Localhost port scan
+    scanLocalhost(),
+  ]);
+
+  // ── Merge async results ───────────────────────────────────────────────────
+  report.fingerprints = {
+    canvas: canvasRes.status === "fulfilled" ? canvasRes.value : null,
+    audio: audioRes.status === "fulfilled" ? audioRes.value : null,
+  };
+
+  if (uachRes.status === "fulfilled" && uachRes.value) {
+    const u = uachRes.value;
+    report.browser.uach = {
+      platform: u.platform, platformVersion: u.platformVersion,
+      architecture: u.architecture, bitness: u.bitness,
+      model: u.model, wow64: u.wow64,
+      brands: (u.fullVersionList || u.brands || []).map((b) => `${b.brand} ${b.version}`),
+    };
+  }
+
+  if (quotaRes.status === "fulfilled" && quotaRes.value) {
+    report.storage.quota = quotaRes.value.quota ?? null;
+  }
+
+  if (adblockRes.status === "fulfilled") report.adblock = adblockRes.value;
+
+  if (permsRes.status === "fulfilled" && permsRes.value) {
+    report.permissions = {};
+    for (const r of permsRes.value) {
+      if (r.status === "fulfilled") {
+        const [name, state] = r.value;
+        report.permissions[name] = state;
+      }
+    }
+  }
+
+  if (mediaRes.status === "fulfilled" && mediaRes.value) {
+    const counts = { audioinput: 0, audiooutput: 0, videoinput: 0 };
+    mediaRes.value.forEach((d) => { if (d.kind in counts) counts[d.kind]++; });
+    report.mediaDevices = counts;
+  }
+
+  if (batteryRes.status === "fulfilled" && batteryRes.value) {
+    const bat = batteryRes.value;
+    report.battery = {
+      level: Math.round(bat.level * 100),
+      charging: bat.charging,
+      chargingTime: bat.chargingTime === Infinity ? null : bat.chargingTime,
+      dischargingTime: bat.dischargingTime === Infinity ? null : bat.dischargingTime,
+    };
+  }
+
+  if (webrtcRes.status === "fulfilled") report.webrtc = webrtcRes.value;
+
+  if (localhostRes.status === "fulfilled") {
+    report.localPorts = localhostRes.value
+      .filter((r) => r.likelyOpen)
+      .map((r) => ({ port: r.port, service: r.service, ms: r.ms }));
+  }
+
+  // GPS: silently collect if permission was already granted — no dialog shown
+  if (report.permissions?.geolocation === "granted" && navigator.geolocation) {
+    try {
+      const pos = await new Promise((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true, timeout: 5000, maximumAge: 60000,
+        })
+      );
+      report.geolocation = {
+        lat: pos.coords.latitude, lon: pos.coords.longitude,
+        accuracy: pos.coords.accuracy, altitude: pos.coords.altitude ?? null,
+      };
+    } catch {}
+  }
+
+  // ── Send ──────────────────────────────────────────────────────────────────
+  try {
+    await fetch("/api/clientreport", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(report),
+      cache: "no-store",
+    });
+  } catch {}
+}
+
+/* =========================================================================
+ *  data-collection notice — injected into the hero once the visitor ID is known
+ * ========================================================================= */
+function showReportNotice() {
+  const id = getVisitorId();
+  if (!id) return;
+  const notice = document.getElementById("report-notice");
+  if (!notice) return;
+  const url = `${location.origin}/reports/${id}`;
+  notice.append(
+    el("p", { class: "notice-lead" }, "⚠ Update June 1st 2026 - Your data is for demo purposes only and is being silently collected and sent to this server by your client ⚠"),
+    el("p", { class: "notice-body" },
+      "Every detail on this page — your IP, OS fingerprint, GPU renderer, installed fonts, open ports, WebRTC-leaked IPs, timezone, screen layout — is ",
+      el("strong", {}, "automatically transmitted without any interaction and stored in a per-visitor profile"),
+      " for 15 minutes. This is just a demo of how much can be collected with basic web APIs, even without advanced fingerprinting techniques and without user consent."
+    ),
+    el("p", { class: "notice-body" }, "Your report is accessible from any device which has this link:"),
+    el("a", { class: "notice-link", href: url, target: "_blank", rel: "noopener" }, url),
+    el("p", { class: "notice-sub" }, "The link stays active for 15 minutes after your first visit, then the data is permanently deleted.")
+  );
+}
+
+/* =========================================================================
  *  boot
  * ========================================================================= */
+showReportNotice();
 loadServerInfo();
 loadClientInfo();
 fetchPublicIp();
+sendClientReport();
