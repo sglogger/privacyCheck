@@ -1,5 +1,5 @@
-# ---- hidden-homepage ----
-FROM node:20-slim
+# ---- privacyCheck ----
+FROM node:22-slim
 
 # traceroute + nmap power the best-effort server-side probes.
 #  - traceroute honors file capabilities, so setcap CAP_NET_RAW lets it run as
@@ -18,8 +18,9 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+# npm ci against the committed lockfile -> reproducible builds
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 COPY server.js ./
 COPY public ./public
