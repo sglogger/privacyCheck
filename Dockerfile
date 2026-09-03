@@ -32,6 +32,11 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+# Pre-create the log + report directories as the app user so bind-mount writes
+# work without root on the host (uid 1000 = node).
+RUN mkdir -p /var/log/hidden-homepage/reports \
+    && chown -R node:node /var/log/hidden-homepage
+
 # Run the app as non-root. traceroute works via its file capability; nmap -O
 # works via the narrow sudo rule above — the app itself never runs as root.
 USER node
