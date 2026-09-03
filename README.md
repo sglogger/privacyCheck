@@ -149,7 +149,7 @@ docker run --rm -p 3000:3000 \
   privacycheck
 ```
 
-### Local (Node 20+)
+### Local (Node 22+)
 
 ```bash
 npm install

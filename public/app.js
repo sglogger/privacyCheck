@@ -480,7 +480,7 @@ function loadClientInfo() {
     } else {
       b.push(row("Status", "can't determine version", "dim"));
     }
-    b.push(el("p", { class: "note" }, "Heuristic: your version is parsed from the User-Agent / Client Hints and compared to reference latest-stable versions (early 2026). An outdated browser is a real security risk."));
+    b.push(el("p", { class: "note" }, "Heuristic: your version is parsed from the User-Agent / Client Hints and compared to reference latest-stable versions (September 2026). An outdated browser is a real security risk."));
     add(card("Browser up to date?", "🆙", "client", b).card);
   }
 
@@ -856,9 +856,10 @@ function loadClientInfo() {
 /* =========================================================================
  *  low-level recon utilities
  * ========================================================================= */
-// Reference latest *stable major* versions (approx, early 2026). Browsers
+// Reference latest *stable major* versions (approx, September 2026). Browsers
 // release fast, so this is a heuristic — update the numbers to stay accurate.
-const LATEST_STABLE = { Chrome: 132, Edge: 132, Opera: 117, Firefox: 134, Safari: 18 };
+// Safari switched to year-based majors in 2025 (18 → 26), hence the jump.
+const LATEST_STABLE = { Chrome: 152, Edge: 152, Opera: 135, Firefox: 155, Safari: 26 };
 
 function detectBrowserVersion() {
   const ua = navigator.userAgent;

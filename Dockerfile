@@ -1,5 +1,5 @@
 # ---- hidden-homepage ----
-FROM node:20-slim
+FROM node:24-slim
 
 # traceroute + nmap power the best-effort server-side probes.
 #  - traceroute honors file capabilities, so setcap CAP_NET_RAW lets it run as
