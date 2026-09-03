@@ -65,6 +65,31 @@ if (LOG_REQUESTS) {
   });
 }
 
+// Security headers. Deliberately NOT set: Referrer-Policy — index.html opts
+// into `unsafe-url` via <meta> because leaking the referrer is part of the
+// demo. The CSP must stay permissive where the recon features need it: the
+// google-analytics fetch (ad-blocker test — if *we* blocked it, every visitor
+// would appear to run a blocker), the 127.0.0.1/localhost fetches (localhost
+// port scan) and the OpenStreetMap map embeds.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'", // the adblock bait element uses an inline style attribute
+  "img-src 'self' data:",
+  "connect-src 'self' https://api.ipify.org https://api64.ipify.org https://www.google-analytics.com http://127.0.0.1:* http://localhost:*",
+  "frame-src https://www.openstreetmap.org",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'self'",
+].join("; ");
+app.use((_req, res, next) => {
+  res.set("Content-Security-Policy", CSP);
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-Frame-Options", "SAMEORIGIN");
+  next();
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json({ limit: "16kb" }));
 
@@ -345,43 +370,57 @@ async function resolveProbeTarget(rawIp) {
   return { ip, note: null };
 }
 
-// Per-IP rate limit for the expensive active probes (traceroute/nmap/portscan),
-// so the server can't be abused as a root-privileged scan reflector. In-memory
-// sliding window; tune via PROBE_RATE_MAX / PROBE_RATE_WINDOW_MS.
-const PROBE_MAX = Number(process.env.PROBE_RATE_MAX || 10);
-const PROBE_WINDOW_MS = Number(process.env.PROBE_RATE_WINDOW_MS || 60000);
-const probeHits = new Map(); // ip -> timestamps[]
-function probeRateLimit(req) {
-  const ip = clientIpOf(req);
-  const now = Date.now();
-  const hits = (probeHits.get(ip) || []).filter((t) => now - t < PROBE_WINDOW_MS);
-  if (hits.length >= PROBE_MAX) {
-    probeHits.set(ip, hits);
-    return { ok: false, retry: Math.ceil((PROBE_WINDOW_MS - (now - hits[0])) / 1000) };
-  }
-  hits.push(now);
-  probeHits.set(ip, hits);
-  if (probeHits.size > 5000) {
-    for (const [k, v] of probeHits) {
-      const keep = v.filter((t) => now - t < PROBE_WINDOW_MS);
-      if (keep.length) probeHits.set(k, keep);
-      else probeHits.delete(k);
+// Per-IP sliding-window rate limiter factory (in-memory). Two instances below:
+// a tight one for the expensive active probes (traceroute/nmap/portscan), so
+// the server can't be abused as a root-privileged scan reflector, and a looser
+// one for the cheap DNS endpoints, so they can't serve as an anonymous lookup
+// relay. Tune via PROBE_RATE_MAX / PROBE_RATE_WINDOW_MS and LOOKUP_RATE_MAX /
+// LOOKUP_RATE_WINDOW_MS.
+function makeRateLimiter({ max, windowMs, label }) {
+  const hitsMap = new Map(); // ip -> timestamps[]
+  function check(req) {
+    const ip = clientIpOf(req);
+    const now = Date.now();
+    const hits = (hitsMap.get(ip) || []).filter((t) => now - t < windowMs);
+    if (hits.length >= max) {
+      hitsMap.set(ip, hits);
+      return { ok: false, retry: Math.ceil((windowMs - (now - hits[0])) / 1000) };
     }
+    hits.push(now);
+    hitsMap.set(ip, hits);
+    if (hitsMap.size > 5000) {
+      for (const [k, v] of hitsMap) {
+        const keep = v.filter((t) => now - t < windowMs);
+        if (keep.length) hitsMap.set(k, keep);
+        else hitsMap.delete(k);
+      }
+    }
+    return { ok: true };
   }
-  return { ok: true };
+  // Sends the 429 and returns true when the request is over the limit.
+  return function limited(req, res, extra = {}) {
+    const rl = check(req);
+    if (rl.ok) return false;
+    res.set("Retry-After", String(rl.retry));
+    res.status(429).json({
+      available: false,
+      reason: `Rate limited — max ${max} ${label} per ${windowMs / 1000}s. Try again in ${rl.retry}s.`,
+      ...extra,
+    });
+    return true;
+  };
 }
 
-function probeLimited(req, res, extra = {}) {
-  const rl = probeRateLimit(req);
-  if (rl.ok) return false;
-  res.set("Retry-After", String(rl.retry));
-  res.status(429).json({
-    available: false,
-    reason: `Rate limited — max ${PROBE_MAX} probes per ${PROBE_WINDOW_MS / 1000}s. Try again in ${rl.retry}s.`,
-    ...extra,
-  });
-  return true;
-}
+const probeLimited = makeRateLimiter({
+  max: Number(process.env.PROBE_RATE_MAX || 10),
+  windowMs: Number(process.env.PROBE_RATE_WINDOW_MS || 60000),
+  label: "probes",
+});
+const lookupLimited = makeRateLimiter({
+  max: Number(process.env.LOOKUP_RATE_MAX || 30),
+  windowMs: Number(process.env.LOOKUP_RATE_WINDOW_MS || 60000),
+  label: "DNS lookups",
+});
 
 // Curated set of "what does the request leak" headers, kept in display order.
 const INTERESTING_HEADERS = [
@@ -1053,6 +1092,7 @@ app.get("/api/osdetect", async (req, res) => {
 // Bulk reverse-DNS for a caller-supplied IP list (e.g. WebRTC-leaked IPs that
 // only the browser knows). Each entry is strictly validated; the list is capped.
 app.get("/api/rdns", async (req, res) => {
+  if (lookupLimited(req, res, { results: [] })) return;
   const list = String(req.query.ips || "")
     .split(",")
     .map((s) => normalizeIp(s.trim()))
@@ -1066,6 +1106,7 @@ app.get("/api/rdns", async (req, res) => {
 
 // Forward DNS records for a validated hostname (the client's reverse-DNS name).
 app.get("/api/dns", async (req, res) => {
+  if (lookupLimited(req, res)) return;
   const host = String(req.query.host || "").trim().toLowerCase().replace(/\.$/, "");
   if (!isValidHostname(host)) {
     return res.json({ available: false, reason: "invalid or missing hostname" });
@@ -1361,7 +1402,7 @@ async function cleanupOldReports() {
 }
 
 app.listen(PORT, () => {
-  console.log(`hidden-homepage listening on http://0.0.0.0:${PORT}`);
+  console.log(`privacyCheck listening on http://0.0.0.0:${PORT}`);
   if (logStream) console.log(`access/exec/client log also appended to ${LOG_FILE}`);
   if (REPORT_DIR) console.log(`per-visitor reports → ${REPORT_DIR}  (served at /reports/<uuid>, TTL 30 min)`);
   if (REPORT_DIR) {
