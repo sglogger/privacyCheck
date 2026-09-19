@@ -866,6 +866,22 @@ td:first-child{color:#555;width:165px;white-space:nowrap;padding-right:1.5rem}
 /* API                                                                */
 /* ------------------------------------------------------------------ */
 
+// These endpoints run resource-intensive, privileged network probes (nmap
+// port scans / OS fingerprinting via sudo, traceroute, DNS lookups). Rate
+// limiting alone doesn't verify who is calling them, so require a shared
+// secret. Fails closed: unset RECON_API_KEY means the endpoints stay locked.
+const RECON_API_KEY = process.env.RECON_API_KEY || "";
+function requireReconAuth(req, res, next) {
+  if (!RECON_API_KEY || req.get("x-api-key") !== RECON_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+app.use(
+  ["/api/info", "/api/traceroute", "/api/portscan", "/api/osdetect", "/api/dns", "/api/rdns"],
+  requireReconAuth
+);
+
 app.get("/api/info", async (req, res) => {
   const directIp = normalizeIp(req.socket.remoteAddress);
   const chain = forwardedChain(req);
