@@ -16,8 +16,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// We sit behind whatever proxy/load balancer; trust the chain so req.ip is meaningful.
-app.set("trust proxy", true);
+// Only honour X-Forwarded-For hops added by proxies we actually trust. The
+// left-most XFF entry is whatever the client sent, so trusting the whole chain
+// would let anyone pick the IP we probe (turning nmap/traceroute into a scan
+// reflector) and dodge the per-IP rate limit. Default: loopback + private/
+// Docker ranges (Traefik on the same host). Behind a public CDN, set
+// TRUST_PROXY to its ranges or a hop count (Express "trust proxy" syntax).
+const TRUST_PROXY = process.env.TRUST_PROXY || "loopback, linklocal, uniquelocal";
+app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY);
 
 // Apache "combined" access log to stdout (-> docker logs). Disable with LOG_REQUESTS=false.
 const LOG_REQUESTS = process.env.LOG_REQUESTS !== "false";
@@ -191,15 +197,11 @@ function forwardedChain(req) {
     .filter(Boolean);
 }
 
-// Best guess at the requesting client's IP (used for both access + exec logs).
+// The requesting client's IP: the first XFF hop not added by a trusted proxy
+// (see TRUST_PROXY), else the socket peer. Used for logs, rate limiting and as
+// the active-probe target, so it must never be taken from client-set headers.
 function clientIpOf(req) {
-  const chain = forwardedChain(req);
-  return (
-    chain[0] ||
-    normalizeIp(req.headers["cf-connecting-ip"]) ||
-    normalizeIp(req.socket.remoteAddress) ||
-    "-"
-  );
+  return normalizeIp(req.ip || req.socket.remoteAddress) || "-";
 }
 
 // The direct TCP peer (e.g. Traefik/CDN) — not the real client when proxied.
@@ -869,12 +871,7 @@ td:first-child{color:#555;width:165px;white-space:nowrap;padding-right:1.5rem}
 app.get("/api/info", async (req, res) => {
   const directIp = normalizeIp(req.socket.remoteAddress);
   const chain = forwardedChain(req);
-  // The "real" client is the left-most forwarded entry, falling back to the socket peer.
-  const clientIp =
-    chain[0] ||
-    normalizeIp(req.headers["cf-connecting-ip"]) ||
-    normalizeIp(req.headers["true-client-ip"]) ||
-    directIp;
+  const clientIp = clientIpOf(req);
 
   const headers = {};
   for (const h of INTERESTING_HEADERS) {
@@ -937,11 +934,7 @@ app.get("/api/info", async (req, res) => {
 // it degrades gracefully and never throws.
 app.get("/api/traceroute", async (req, res) => {
   if (probeLimited(req, res, { hops: [] })) return;
-  const chain = forwardedChain(req);
-  const clientIp =
-    chain[0] ||
-    normalizeIp(req.headers["cf-connecting-ip"]) ||
-    normalizeIp(req.socket.remoteAddress);
+  const clientIp = clientIpOf(req);
 
   const tgt = await resolveProbeTarget(clientIp);
   if (tgt.error) {
@@ -1083,11 +1076,7 @@ function probePort(ip, port, timeout = 1500) {
 // Reverse port scan of the visitor's own public IP (TCP connect, no nmap/root).
 app.get("/api/portscan", async (req, res) => {
   if (probeLimited(req, res, { ports: [] })) return;
-  const chain = forwardedChain(req);
-  const ip =
-    chain[0] ||
-    normalizeIp(req.headers["cf-connecting-ip"]) ||
-    normalizeIp(req.socket.remoteAddress);
+  const ip = clientIpOf(req);
 
   const tgt = await resolveProbeTarget(ip);
   if (tgt.error) {
@@ -1122,8 +1111,7 @@ app.get("/api/portscan", async (req, res) => {
 // Degrades to the passive UA guess if sudo/nmap/raw sockets aren't available.
 app.get("/api/osdetect", async (req, res) => {
   if (probeLimited(req, res, { passive: osGuess(req) })) return;
-  const chain = forwardedChain(req);
-  const ip = chain[0] || normalizeIp(req.headers["cf-connecting-ip"]) || normalizeIp(req.socket.remoteAddress);
+  const ip = clientIpOf(req);
   const tgt = await resolveProbeTarget(ip);
   if (tgt.error) {
     return res.json({ available: false, reason: tgt.error, passive: osGuess(req) });

@@ -171,6 +171,7 @@ npm start   # http://localhost:3000
 | `TRACEROUTE_HIDE_RANGES` | `193.239.20.0/22` | Comma-separated CIDRs to also mask (e.g. your ISP edge) |
 | `PROBE_RATE_MAX` | `10` | Max active probes (traceroute/nmap/portscan) per IP per window |
 | `PROBE_RATE_WINDOW_MS` | `60000` | Rate-limit window in ms for the active probes |
+| `TRUST_PROXY` | `loopback, linklocal, uniquelocal` | Which peers may set `X-Forwarded-For` (Express `trust proxy` syntax: CIDRs/names or a hop count). See [Deploying behind a proxy](#deploying-behind-a-proxy) |
 | `BROWSER_VERSIONS_REFRESH` | `true` | Re-fetch the latest stable browser versions from the vendors' release feeds at runtime; `false` pins the card to the committed snapshot |
 | `BROWSER_VERSIONS_TTL_HOURS` | `12` | How often that refresh may run |
 
@@ -228,10 +229,22 @@ small hardcoded table and labels the card accordingly.
 
 ## Deploying behind a proxy
 
-The server sets `trust proxy` and reads `X-Forwarded-For`, so put it behind
-Traefik / nginx / Caddy / Cloudflare to see real client IPs and the full proxy
-chain. On `localhost` (or any private/internal client IP) the geo lookup and the
-active probes fall back to the **server's own public IP** and say so.
+Put it behind Traefik / nginx / Caddy / Cloudflare to see real client IPs and the
+full proxy chain. On `localhost` (or any private/internal client IP) the geo lookup
+and the active probes fall back to the **server's own public IP** and say so.
+
+The client IP — which is also the **target of the active probes** and the key
+for the rate limit — is the right-most `X-Forwarded-For` hop that was *not*
+added by a trusted proxy. The left part of that header is whatever the client
+sent, so it is only displayed, never probed. Trusted proxies are set with
+`TRUST_PROXY`:
+
+- Default `loopback, linklocal, uniquelocal` — any proxy on localhost or a
+  private/Docker network (typical Traefik setup). Direct connections from public
+  IPs can't spoof anything; clients on your LAN still can.
+- Behind a public CDN (e.g. Cloudflare), add its ranges, or use a hop count
+  (`TRUST_PROXY=2`). A hop count is only safe if the container port is **not**
+  reachable directly, otherwise a client can just send its own header.
 
 ---
 
