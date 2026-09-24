@@ -1,18 +1,18 @@
 {
-  "updated": "2026-09-17",
+  "updated": "2026-09-24",
   "note": "Latest stable major versions, refreshed by tools/update-browser-versions.mjs. The server also refreshes this in memory; see /api/browser-versions.",
   "latest": {
     "Chrome": 154,
     "Edge": 153,
     "Firefox": 156,
-    "Opera": 135,
+    "Opera": 136,
     "Safari": 27
   },
   "full": {
     "Chrome": "154.0.8037.58",
     "Edge": "153.0.4234.48",
     "Firefox": "156.0.1",
-    "Opera": "135.0.5973.142",
+    "Opera": "136.0.6008.52",
     "Safari": "27"
   }
 }
