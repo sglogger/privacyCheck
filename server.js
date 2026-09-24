@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchLatestBrowserVersions } from "./lib/browser-versions.mjs";
+import { requireSameOriginBrowserRequest } from "./lib/same-origin.mjs";
 
 // execFile (no shell) so a spoofed X-Forwarded-For can never inject commands.
 const execFileAsync = promisify(execFile);
@@ -934,6 +935,7 @@ app.get("/api/info", async (req, res) => {
 // it degrades gracefully and never throws.
 app.get("/api/traceroute", async (req, res) => {
   if (probeLimited(req, res, { hops: [] })) return;
+  if (requireSameOriginBrowserRequest(req, res)) return;
   const clientIp = clientIpOf(req);
 
   const tgt = await resolveProbeTarget(clientIp);
@@ -1076,6 +1078,7 @@ function probePort(ip, port, timeout = 1500) {
 // Reverse port scan of the visitor's own public IP (TCP connect, no nmap/root).
 app.get("/api/portscan", async (req, res) => {
   if (probeLimited(req, res, { ports: [] })) return;
+  if (requireSameOriginBrowserRequest(req, res)) return;
   const ip = clientIpOf(req);
 
   const tgt = await resolveProbeTarget(ip);
@@ -1111,6 +1114,7 @@ app.get("/api/portscan", async (req, res) => {
 // Degrades to the passive UA guess if sudo/nmap/raw sockets aren't available.
 app.get("/api/osdetect", async (req, res) => {
   if (probeLimited(req, res, { passive: osGuess(req) })) return;
+  if (requireSameOriginBrowserRequest(req, res)) return;
   const ip = clientIpOf(req);
   const tgt = await resolveProbeTarget(ip);
   if (tgt.error) {

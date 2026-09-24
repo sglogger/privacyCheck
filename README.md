@@ -312,6 +312,15 @@ with the address and reverse-DNS stripped.
 - The active probes are **rate-limited per IP** (`PROBE_RATE_MAX` per
   `PROBE_RATE_WINDOW_MS`, default 10/60s). Private/internal targets fall back
   to the server's own public IP.
+- The active probes also check that the request's `Origin` (or `Referer`)
+  header names this site itself (`lib/same-origin.mjs`), so an arbitrary
+  third-party web page can't drive a visitor's browser into calling
+  `/api/traceroute`, `/api/portscan` or `/api/osdetect` cross-origin. **This
+  is not authentication** — Origin/Referer are ordinary headers a
+  non-browser client (curl, a script) can set to anything, so this does
+  nothing against a direct or forged request. The actual defenses against
+  probe abuse are the per-IP rate limiter and the server-derived, validated
+  probe target described above.
 - Runs as the **non-root** `node` user. `traceroute` works via a file capability
   (`setcap cap_net_raw`); `nmap` is allowed via a narrow passwordless `sudo` rule
   that lets `node` run **only** `/usr/bin/nmap`. Everything degrades gracefully
@@ -340,6 +349,7 @@ with the address and reverse-DNS stripped.
 ```text
 server.js                     Express server, all APIs, per-visitor report writer
 lib/browser-versions.mjs      Latest-stable browser lookup (vendor release feeds)
+lib/same-origin.mjs          Same-origin browser check for the probe endpoints (not authentication)
 public/browser-versions.json  Offline baseline for the up-to-date check
 public/index.html             Page shell + adblock bait + report-notice placeholder
 public/style.css              Dark "recon dashboard" styling
